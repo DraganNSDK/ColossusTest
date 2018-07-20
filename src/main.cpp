@@ -2194,6 +2194,9 @@ CAmount GetMasternodePayment(int nHeight, int nMasternodeCount, CAmount nMoneySu
 {
     if (nHeight < Params().GetChainHeight(ChainHeight::H4))
         return GetBlockValueReward(nHeight) * 60 / 100; // old rules 60% goes to the masternode
+    else if (nHeight >= Params().GetChainHeight(ChainHeight::H6))
+        return (GetBlockValueReward(nHeight) - GetBlockValueDevFund(nHeight)) * 60 / 100; // 60% goes to the masternode again
+    else; // see-saw algorithm [H4; H6)
 
     const CAmount nReward = GetBlockValueReward(nHeight) - GetBlockValueDevFund(nHeight);
     const CAmount nNodeCoins = nMasternodeCount * Params().GetRequiredMasternodeCollateral();
@@ -3426,10 +3429,6 @@ bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pin
         DebugPrintf("%s: Masternode payment check skipped on sync - skipping IsBlockPayeeValid()\n", __func__);
     }
 
-    // FIXME
-    if (pindex->nHeight == 11040)
-        uiInterface.ThreadSafeMessageBox("11040", "11040", CClientUIInterface::MSG_WARNING);
-
     // Check that the block does not overmint
     CAmount nExpectedMint = nFees + GetBlockExpectedMint(pindex->nHeight);
     if (!IsBlockValueValid(block, pindex->nHeight, nExpectedMint, pindex->nMint, pindex->pprev))
@@ -4335,18 +4334,6 @@ bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, bool f
     if (fCheckPOW && !CheckProofOfWork(block.GetHash(), block.nBits))
         return state.DoS(50, error("CheckBlockHeader() : proof of work failed"), REJECT_INVALID, "high-hash");
 
-    // Zerocoin version header must be used after Params().Zerocoin_StartHeight(). And never before.
-    const int32_t nZCver = CBlockHeader::VERSION5;
-    if (block.GetBlockTime() > Params().Zerocoin_StartTime()) {
-        if (block.nVersion < nZCver)
-            return state.DoS(50, error("CheckBlockHeader() : block version must be %d+ after ZerocoinStartHeight", nZCver),
-            REJECT_INVALID, "block-version");
-    } else {
-        if (block.nVersion >= nZCver)
-            return state.DoS(50, error("CheckBlockHeader() : block version must be below %d before ZerocoinStartHeight", nZCver),
-            REJECT_INVALID, "block-version");
-    }
-
     return true;
 }
 
@@ -4523,14 +4510,15 @@ bool CheckWork(const CBlock block, CBlockIndex* const pindexPrev)
 
 bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationState& state, CBlockIndex* const pindexPrev)
 {
-    uint256 hash = block.GetHash();
+    const uint256 hash = block.GetHash();
 
     if (hash == Params().HashGenesisBlock())
         return true;
 
-    assert(pindexPrev);
+    if (!pindexPrev)
+        return error("%s : null pindexPrev for block %s", __func__, hash.ToString());
 
-    int nHeight = pindexPrev->nHeight + 1;
+    const int nHeight = pindexPrev->nHeight + 1;
 
     //If this is a reorg, check that it is not too deep
     int64_t nMaxReorganizationDepth = GetSporkValue(SPORK_19_MAX_REORGANIZATION_DEPTH);
@@ -4560,6 +4548,18 @@ bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationState& sta
             CBlockIndex::IsSuperMajority(i, pindexPrev, Params().RejectBlockOutdatedMajority())) {
                 return state.Invalid(error("%s : rejected nVersion=%d block", __func__, block.nVersion), REJECT_OBSOLETE, "bad-version");
         }
+    }
+
+    // Zerocoin version header must be used after Params().Zerocoin_StartHeight(). And never before.
+    const int32_t nZCver = CBlockHeader::VERSION5;
+    if (nHeight >= Params().Zerocoin_StartHeight()) {
+        if (block.GetVersion() < nZCver)
+            return state.DoS(50, error("%s : block version must be %d+ after ZerocoinStartHeight", __func__, nZCver),
+                REJECT_INVALID, "block-version");
+    } else {
+        if (block.GetVersion() >= nZCver)
+            return state.DoS(50, error("%s : block version must be below %d before ZerocoinStartHeight", __func__, nZCver),
+                REJECT_INVALID, "block-version");
     }
 
     return true;
@@ -4847,8 +4847,8 @@ bool ProcessNewBlock(CValidationState& state, CNode* pfrom, CBlock* pblock, CDis
     // DLOCKSFIX: TRY_LOCK is safer here, the only piece doing an unconditional lock
     // maybe we should do the mempool.cs as well? as it's almost always needed, and that way
     // we'd reduce issues down the line?
-    //LOCK2(cs_main, mempool.cs);
-    LOCK(cs_main);   // Replaces the former TRY_LOCK loop because busy waiting wastes too much resources
+    LOCK2(cs_main, mempool.cs);
+    //LOCK(cs_main);   // Replaces the former TRY_LOCK loop because busy waiting wastes too much resources
 
     MarkBlockAsReceived(pblock->GetHash());
     if (!checked) {

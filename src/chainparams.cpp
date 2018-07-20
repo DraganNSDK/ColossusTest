@@ -72,11 +72,13 @@ static const Checkpoints::CCheckpointData data = {
 };
 
 static Checkpoints::MapCheckpoints mapCheckpointsTestnet =
-    boost::assign::map_list_of(0, uint256("6cd37a546cfaafeee652fd0f3a85ba64c0f539f771a27fca9610cdc2f3278932"));
+    boost::assign::map_list_of(0, uint256("6cd37a546cfaafeee652fd0f3a85ba64c0f539f771a27fca9610cdc2f3278932"))
+        (78300, uint256("7ee7297c6673d5eca2cba9df0f2c48f5023ecdefac715a82c8bfbf8dac923666"));
+
 static const Checkpoints::CCheckpointData dataTestnet = {
     &mapCheckpointsTestnet,
     1520769358,
-    0,
+    148800,
     250};
 
 static Checkpoints::MapCheckpoints mapCheckpointsRegtest =
@@ -217,7 +219,6 @@ public:
         nBlockFirstFraudulent = std::numeric_limits<int>::max(); //First block that bad serials emerged
         nBlockLastGoodCheckpoint = std::numeric_limits<int>::max(); //Last valid accumulator checkpoint
         nBlockEnforceInvalidUTXO = std::numeric_limits<int>::max(); //Start enforcing the invalid UTXO's
-        nZerocoinStartTime = std::numeric_limits<int>::max(); // FIXME
     }
 
     CBitcoinAddress GetDevFundAddress() const
@@ -245,6 +246,12 @@ public:
             return 388800;
 
         case ChainHeight::H5:
+            return std::numeric_limits<int>::max(); // FIXME
+
+        case ChainHeight::H6:
+            return std::numeric_limits<int>::max(); // FIXME
+
+        case ChainHeight::H7:
             return std::numeric_limits<int>::max(); // FIXME
 
         default:
@@ -350,7 +357,6 @@ public:
         nBlockFirstFraudulent = std::numeric_limits<int>::max(); //First block that bad serials emerged
         nBlockLastGoodCheckpoint = std::numeric_limits<int>::max(); //Last valid accumulator checkpoint
         nBlockEnforceInvalidUTXO = std::numeric_limits<int>::max(); //Start enforcing the invalid UTXO's
-        nZerocoinStartTime = 1530126974; // June 4, 2018 7:53:20 PM
 
         strSporkKey = "026ee678f254a97675a90ebea1e7593fdb53047321f3cb0560966d4202b32c48e2";
     }
@@ -378,6 +384,12 @@ public:
         case ChainHeight::H5:
             return 53384;
 
+        case ChainHeight::H6:
+            return 80640;
+
+        case ChainHeight::H7:
+            return 80640;
+
         default:
             assert(false);
             return -1;
@@ -386,6 +398,8 @@ public:
 
     int64_t GetMinStakeAge(int nTargetHeight) const
     {
+        //// ZCTESTINGFIXES: just temp to avoid 'CheckStakeKernelHash() : min age violation - ' error
+        //return 60*60*2;
         return 60*60*8; //8 hours
     }
 

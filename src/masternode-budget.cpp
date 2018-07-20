@@ -41,7 +41,15 @@ int GetBudgetFinalizationBlocks()
         return GetBudgetPaymentCycleBlocks() / 2;
 }
 
-bool IsBudgetCollateralValid(uint256 nTxCollateralHash, uint256 nExpectedHash, std::string& strError, int64_t& nTime, int& nConf)
+CAmount GetBudgetFee(int nBudgetBlockStart)
+{
+    if (nBudgetBlockStart >= Params().GetChainHeight(ChainHeight::H7))
+        return 25000 * COIN;
+    else
+        return 50 * COIN;
+}
+
+bool IsBudgetCollateralValid(uint256 nTxCollateralHash, uint256 nExpectedHash, int nBudgetBlockStart, std::string& strError, int64_t& nTime, int& nConf)
 {
     CTransaction txCollateral;
     uint256 nBlockHash;
@@ -54,22 +62,33 @@ bool IsBudgetCollateralValid(uint256 nTxCollateralHash, uint256 nExpectedHash, s
     if (txCollateral.vout.size() < 1) return false;
     if (txCollateral.nLockTime != 0) return false;
 
-    CScript findScript;
-    findScript << OP_RETURN << ToByteVector(nExpectedHash);
-
-    bool foundOpReturn = false;
-    BOOST_FOREACH (const CTxOut o, txCollateral.vout) {
-        if (!o.scriptPubKey.IsNormalPaymentScript() && !o.scriptPubKey.IsUnspendable()) {
-            strError = strprintf("Invalid Script %s", txCollateral.ToString());
+    const CAmount nFeeRequired = GetBudgetFee(nBudgetBlockStart);
+    if (nBudgetBlockStart >= Params().GetChainHeight(ChainHeight::H7)) {
+        CAmount nFeePaid = FindPayment(txCollateral, Params().GetTxFeeAddress().ToString());
+        if (nFeePaid < nFeeRequired) {
+            strError = strprintf("Invalid collateral tx (paid %s, required %s): %s",
+                FormatMoney(nFeePaid), FormatMoney(nFeeRequired), txCollateral.GetHash().ToString());
             LogPrint("masternode","CBudgetProposalBroadcast::IsBudgetCollateralValid - %s\n", strError);
             return false;
         }
-        if (o.scriptPubKey == findScript && o.nValue >= BUDGET_FEE_TX) foundOpReturn = true;
-    }
-    if (!foundOpReturn) {
-        strError = strprintf("Couldn't find opReturn %s in %s", nExpectedHash.ToString(), txCollateral.ToString());
-        LogPrint("masternode","CBudgetProposalBroadcast::IsBudgetCollateralValid - %s\n", strError);
-        return false;
+    } else {
+        CScript findScript;
+        findScript << OP_RETURN << ToByteVector(nExpectedHash);
+
+        bool foundOpReturn = false;
+        BOOST_FOREACH (const CTxOut o, txCollateral.vout) {
+            if (!o.scriptPubKey.IsNormalPaymentScript() && !o.scriptPubKey.IsUnspendable()) {
+                strError = strprintf("Invalid Script %s", txCollateral.ToString());
+                LogPrint("masternode","CBudgetProposalBroadcast::IsBudgetCollateralValid - %s\n", strError);
+                return false;
+            }
+            if (o.scriptPubKey == findScript && o.nValue >= nFeeRequired) foundOpReturn = true;
+        }
+        if (!foundOpReturn) {
+            strError = strprintf("Couldn't find opReturn %s in %s", nExpectedHash.ToString(), txCollateral.ToString());
+            LogPrint("masternode","CBudgetProposalBroadcast::IsBudgetCollateralValid - %s\n", strError);
+            return false;
+        }
     }
 
     // RETRIEVE CONFIRMATIONS AND NTIME
@@ -169,7 +188,7 @@ void CBudgetManager::SubmitFinalBudget()
         vecTxBudgetPayments.push_back(txBudgetPayment);
     }
 
-    if (vecTxBudgetPayments.size() < 1) {
+    if (vecTxBudgetPayments.empty()) {
         LogPrint("masternode","CBudgetManager::SubmitFinalBudget - Found No Proposals For Period\n");
         return;
     }
@@ -187,7 +206,7 @@ void CBudgetManager::SubmitFinalBudget()
 
     if (!mapCollateralTxids.count(tempBudget.GetHash())) {
         CWalletTx wtx;
-        if (!pwalletMain->GetBudgetSystemCollateralTX(wtx, tempBudget.GetHash(), false)) {
+        if (!pwalletMain->GetBudgetSystemCollateralTX(wtx, tempBudget.GetHash(), tempBudget.GetBlockStart(), false)) {
             LogPrint("masternode","CBudgetManager::SubmitFinalBudget - Can't make collateral transaction\n");
             return;
         }
@@ -859,6 +878,7 @@ std::vector<CBudgetProposal*> CBudgetManager::GetBudget()
         //prop start/end should be inside this period
         if (pbudgetProposal->fValid && pbudgetProposal->nBlockStart <= nBlockStart &&
             pbudgetProposal->nBlockEnd >= nBlockEnd &&
+            pbudgetProposal->GetYeas() > 0 &&
             pbudgetProposal->GetYeas() - pbudgetProposal->GetNays() >= mnodeman.CountEnabled(ActiveProtocol()) / 10 &&
             pbudgetProposal->IsEstablished()) {
 
@@ -1034,7 +1054,7 @@ void CBudgetManager::NewBlock()
     while (it4 != vecImmatureBudgetProposals.end()) {
         std::string strError = "";
         int nConf = 0;
-        if (!IsBudgetCollateralValid((*it4).nFeeTXHash, (*it4).GetHash(), strError, (*it4).nTime, nConf)) {
+        if (!IsBudgetCollateralValid((*it4).nFeeTXHash, (*it4).GetHash(), (*it4).GetBlockStart(), strError, (*it4).nTime, nConf)) {
             ++it4;
             continue;
         }
@@ -1059,7 +1079,7 @@ void CBudgetManager::NewBlock()
     while (it5 != vecImmatureFinalizedBudgets.end()) {
         std::string strError = "";
         int nConf = 0;
-        if (!IsBudgetCollateralValid((*it5).nFeeTXHash, (*it5).GetHash(), strError, (*it5).nTime, nConf)) {
+        if (!IsBudgetCollateralValid((*it5).nFeeTXHash, (*it5).GetHash(), (*it5).GetBlockStart(), strError, (*it5).nTime, nConf)) {
             ++it5;
             continue;
         }
@@ -1088,7 +1108,12 @@ void CBudgetManager::ProcessMessage(CNode* pfrom, std::string& strCommand, CData
     if (fLiteMode) return;
     if (!masternodeSync.IsBlockchainSynced()) return;
 
-    LOCK(cs_budget);
+    //LOCK(cs_budget);
+    // DLOCKSFIX:
+    // this fast ends up at requiring cs_main/mempool (on most paths here)
+    // I tried optimizing to avoid over-locking things but IMO not worth it 
+    // (we need all 3 most of the time)
+    LOCK3(cs_main, mempool.cs, cs_budget);
 
     if (strCommand == "mnvs") { //Masternode vote sync
         uint256 nProp;
@@ -1120,7 +1145,7 @@ void CBudgetManager::ProcessMessage(CNode* pfrom, std::string& strCommand, CData
 
         std::string strError = "";
         int nConf = 0;
-        if (!IsBudgetCollateralValid(budgetProposalBroadcast.nFeeTXHash, budgetProposalBroadcast.GetHash(), strError, budgetProposalBroadcast.nTime, nConf)) {
+        if (!IsBudgetCollateralValid(budgetProposalBroadcast.nFeeTXHash, budgetProposalBroadcast.GetHash(), budgetProposalBroadcast.GetBlockStart(), strError, budgetProposalBroadcast.nTime, nConf)) {
             LogPrint("masternode","Proposal FeeTX is not valid - %s - %s\n", budgetProposalBroadcast.nFeeTXHash.ToString(), strError);
             if (nConf >= 1) vecImmatureBudgetProposals.push_back(budgetProposalBroadcast);
             return;
@@ -1192,7 +1217,7 @@ void CBudgetManager::ProcessMessage(CNode* pfrom, std::string& strCommand, CData
 
         std::string strError = "";
         int nConf = 0;
-        if (!IsBudgetCollateralValid(finalizedBudgetBroadcast.nFeeTXHash, finalizedBudgetBroadcast.GetHash(), strError, finalizedBudgetBroadcast.nTime, nConf)) {
+        if (!IsBudgetCollateralValid(finalizedBudgetBroadcast.nFeeTXHash, finalizedBudgetBroadcast.GetHash(), finalizedBudgetBroadcast.GetBlockStart(), strError, finalizedBudgetBroadcast.nTime, nConf)) {
             LogPrint("masternode","Finalized Budget FeeTX is not valid - %s - %s\n", finalizedBudgetBroadcast.nFeeTXHash.ToString(), strError);
 
             if (nConf >= 1) vecImmatureFinalizedBudgets.push_back(finalizedBudgetBroadcast);
@@ -1525,7 +1550,7 @@ bool CBudgetProposal::IsValid(std::string& strError, bool fCheckCollateral)
 
     if (fCheckCollateral) {
         int nConf = 0;
-        if (!IsBudgetCollateralValid(nFeeTXHash, GetHash(), strError, nTime, nConf)) {
+        if (!IsBudgetCollateralValid(nFeeTXHash, GetHash(), GetBlockStart(), strError, nTime, nConf)) {
             strError = "Proposal " + strProposalName + ": Invalid collateral";
             return false;
         }
@@ -1551,8 +1576,6 @@ bool CBudgetProposal::IsValid(std::string& strError, bool fCheckCollateral)
 
     //can only pay out 10% of the possible coins (min value of coins)
     if (nAmount > budget.GetTotalBudget(nBlockStart)) {
-        // DRAGAN: 
-        //strError = "Proposal " + strProposalName + ": Payment more than max"; // pivx
         strError = strprintf("Payment more than max of %s", FormatMoney(budget.GetTotalBudget(nBlockStart)));
         return false;
     }
@@ -2074,7 +2097,7 @@ bool CFinalizedBudget::IsValid(std::string& strError, bool fCheckCollateral)
     std::string strError2 = "";
     if (fCheckCollateral) {
         int nConf = 0;
-        if (!IsBudgetCollateralValid(nFeeTXHash, GetHash(), strError2, nTime, nConf)) {
+        if (!IsBudgetCollateralValid(nFeeTXHash, GetHash(), GetBlockStart(), strError2, nTime, nConf)) {
             {
                 strError = "Budget " + strBudgetName + " Invalid Collateral : " + strError2;
                 return false;

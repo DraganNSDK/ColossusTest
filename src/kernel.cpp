@@ -290,9 +290,10 @@ bool CheckStakeKernelHash(unsigned int nBits, const CBlock blockFrom, const CTra
         const string msg = strprintf("CheckStakeKernelHash() : min age violation - nTimeBlockFrom=%d nStakeMinAge=%d nTimeTx=%d", nTimeBlockFrom, nMinStakeAge, nTimeTx);
         if (Params().NetworkID() == CBaseChainParams::MAIN)
             return error(msg.c_str());
-        else
+        else {
             DebugPrintf(msg.c_str());
             return false;
+        }
     }
 
     //grab difficulty
@@ -356,7 +357,12 @@ bool CheckStakeKernelHash(unsigned int nBits, const CBlock blockFrom, const CTra
     }
 
     mapHashedBlocks.clear();
-    mapHashedBlocks[chainActive.Tip()->nHeight] = GetTime(); //store a time stamp of when we last hashed on this block
+    CBlockIndex *pindex = chainActive.Tip();
+    if (pindex)
+        mapHashedBlocks[pindex->nHeight] = GetTime(); //store a time stamp of when we last hashed on this block
+    else
+        error("%s: Tip is nullptr", __func__);
+
     return fSuccess;
 }
 
